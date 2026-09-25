@@ -5,12 +5,17 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "engine/minimize.js" as Minimize
+import "Model.js" as Model
 
 // Display-only: the list is the live Hyprland toplevels model and every action
 // is an IPC call into the plugin's service, which owns all state.
-BarWidget {
+// Model.js turns that list into the view; this file draws it.
+Panel {
   id: root
   moduleName: "omarchy-modes.minimized"
+  ipcTarget: "omarchy-modes.minimized.widget"
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
 
   readonly property var allToplevels: Hyprland.toplevels ? Hyprland.toplevels.values : []
   // Do not replace this with workspace existence, `hidden`, or a polling timer —
@@ -22,9 +27,6 @@ BarWidget {
   readonly property int minimizedCount: minimizedToplevels.length
   readonly property string omarchyPath: Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy"
   readonly property string shellPath: omarchyPath + "/shell"
-
-  property bool menuOpen: false
-  property int menuCursor: 0
 
   function ipcCall(fn, arg) {
     var command = ["qs", "ipc", "-n", "-p", shellPath, "call",
@@ -59,216 +61,269 @@ BarWidget {
     return windowClass !== "" ? windowClass : "Unnamed window"
   }
 
-  function open() {
-    menuCursor = 0
-    menuOpen = true
-  }
-
-  function close() {
-    menuOpen = false
-  }
-
-  function toggle() {
-    if (menuOpen) close()
-    else open()
-  }
-
-  // ---- menu model ----
-  // Same flat layout as omarchy-modes.switcher: one gutter, values flush
-  // right, surface fill on the cursor row. The menu is a bare restore list —
-  // minimizing happens by keybind/double-click, not from here.
-  readonly property string menuFont: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
-  readonly property color menuInk: Color.popups.text
-  readonly property color menuValue: Util.alpha(Color.popups.text, 0.72)
-  readonly property color menuLabel: Util.alpha(Color.popups.text, 0.48)
-  readonly property color menuSurface: Util.alpha(Color.popups.text, 0.07)
-  readonly property int menuGutter: Style.space(18)
-  readonly property int menuEdge: Style.space(8)
-  readonly property int menuSlot: Style.space(18)
-  readonly property int menuRowH: Style.space(24)
-  readonly property int menuHeadH: Style.space(14)
-  readonly property int menuGroupGap: Style.space(16)
-  readonly property int menuTopPad: Style.space(10)
-
-  function menuItems() {
-    if (minimizedCount === 0) return [{ kind: "empty", label: "nothing minimized" }]
-    var items = []
-    for (var i = 0; i < minimizedToplevels.length; i++) {
-      var t = minimizedToplevels[i]
-      items.push({
-        kind: "window", id: toplevelAddress(t), label: windowLabel(t),
-        value: toplevelClass(t)
-      })
+  // The live toplevels, flattened to plain data for the view builder
+  readonly property var snap: ({
+    windows: minimizedToplevels.map(function(t) {
+      return { id: toplevelAddress(t), title: windowLabel(t), "class": toplevelClass(t) }
+    })
+  })
+  property var ui: ({ problem: "" })
+  readonly property var view: {
+    try {
+      return Model.build(snap, ui)
+    } catch (e) {
+      return { title: "MINIMIZED", mark: "", rows: [{ type: "error", label: String(e.message || e) }] }
     }
-    return items
   }
 
-  readonly property var menuModel: menuItems()
-  onMenuModelChanged: menuCursor = Math.max(0, Math.min(menuModel.length - 1, menuCursor))
+  // ---- theme ----
+  readonly property color theme: bar ? bar.foreground : Color.foreground
+  readonly property color bg: Color.popups.background
+  readonly property color surface: Util.alpha(theme, 0.06)
+  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property string mono: bar ? bar.fontFamily : Style.font.family
+  // The panel's tones, each picked by the APCA contrast it must reach on a card (Model.tones)
+  readonly property var tones: Model.tones(theme, bg, surface, urgent)
+  readonly property color ink: Qt.rgba(tones.ink.r, tones.ink.g, tones.ink.b, 1)
+  readonly property color valueTone: Qt.rgba(tones.value.r, tones.value.g, tones.value.b, 1)
+  readonly property color labelTone: Qt.rgba(tones.label.r, tones.label.g, tones.label.b, 1)
+  readonly property color alertTone: Qt.rgba(tones.alert.r, tones.alert.g, tones.alert.b, 1)
 
-  function moveMenuCursor(dy) {
-    var items = menuModel, i = menuCursor
+  readonly property int gutter: Style.space(20)
+  readonly property int edge: Style.space(8)
+  readonly property int rowH: Style.space(22)
+  readonly property int headH: Style.space(16)
+  readonly property int groupGap: Style.space(20)
+  readonly property int topGap: Style.space(12)
+
+  // Keyboard cursor over the actionable rows; hover sets it too
+  property int cursor: 0
+  onViewChanged: cursor = Math.max(0, Math.min((view.rows || []).length - 1, cursor))
+  function moveCursor(dy) {
+    var rows = view.rows || [], i = cursor
     for (;;) {
       var next = i + dy
-      if (next < 0 || next >= items.length) break
+      if (next < 0 || next >= rows.length) break
       i = next
-      if (items[i].kind === "window") break
+      if (rows[i].type === "win") break
     }
-    menuCursor = i
+    cursor = i
   }
 
-  function activateMenuItem() {
-    var item = menuModel[menuCursor]
-    if (item && item.kind === "window") {
-      ipcCall("restore", item.id)
-      close()
-    }
+  // An action is "verb|arg", from Model.js
+  function activate(action) {
+    var a = (action || "").split("|")
+    if (a[0] === "restore") { ipcCall("restore", a[1]); close() }
   }
 
-  implicitWidth: triggerRow.implicitWidth
-  implicitHeight: triggerRow.implicitHeight
-
-  // The service owns the omarchy-modes.minimized target; the widget gets its
-  // own so a keybind or script can open the restore list directly.
-  IpcHandler {
-    target: "omarchy-modes.minimized.widget"
-
-    function menu(): string { root.toggle(); return "toggled" }
-  }
-
-  Row {
-    id: triggerRow
+  // The mark: the minimize glyph, lit while there is something parked, faint when the list is empty
+  BarIconButton {
+    id: button
     anchors.fill: parent
-    spacing: Style.space(1)
-
-    BarIconButton {
-      id: minimizedButton
-      bar: root.bar
-      text: "󰖰"
-      tooltipText: root.minimizedCount + " minimized window"
-        + (root.minimizedCount === 1 ? "" : "s")
-      active: root.menuOpen
-      onPressed: root.toggle()
-    }
-
-    WidgetButton {
-      id: minimizedLabelButton
-      bar: root.bar
-      text: root.minimizedCount + " minimized 󰅂"
-      tooltipText: minimizedButton.tooltipText
-      horizontalMargin: Style.spaceReal(3)
-      active: root.menuOpen
-      onPressed: root.toggle()
+    bar: root.bar
+    tooltipText: root.minimizedCount + " minimized window" + (root.minimizedCount === 1 ? "" : "s")
+    onPressed: root.toggle()
+    iconComponent: Component {
+      Item {
+        Text {
+          anchors.centerIn: parent
+          text: "󰖰"
+          color: root.view.mark === "ready" ? root.theme : Util.alpha(root.theme, 0.3)
+          font.family: root.mono
+          font.pixelSize: Style.font.body
+        }
+      }
     }
   }
 
   KeyboardPanel {
-    id: minimizedMenu
-    anchorItem: minimizedButton
+    id: panel
+    anchorItem: button
     owner: root
     bar: root.bar
-    open: root.menuOpen
-    focusTarget: menuKeys
-    contentWidth: minimizedMenu.fittedContentWidth(Style.space(280))
-    contentHeight: minimizedMenu.fittedContentHeight(menuRows.implicitHeight)
+    open: root.opened
+    focusTarget: keys
+    padding: 0
+    contentWidth: panel.fittedContentWidth(Style.space(280))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
+    Rectangle { anchors.fill: parent; color: root.bg }
     PanelKeyCatcher {
-      id: menuKeys
+      id: keys
       anchors.fill: parent
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveMenuCursor(dy) }
-      onActivateRequested: root.activateMenuItem()
+      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      onActivateRequested: root.activate((root.view.rows[root.cursor] || {}).action)
       onCloseRequested: root.close()
 
       Column {
-        id: menuRows
+        id: content
+        objectName: "omarchy-minimized-content"
         width: parent.width
+        topPadding: Style.space(16)
+        bottomPadding: Style.space(16)
         spacing: 0
-        topPadding: Style.space(4)
-        bottomPadding: root.menuTopPad
+
+        // The top line: the name and the parked count
+        Item {
+          width: parent.width
+          height: root.headH
+          Label {
+            id: head
+            x: root.gutter
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.view.title || ""
+            color: root.labelTone
+          }
+          Label {
+            anchors.left: head.right
+            anchors.leftMargin: Style.space(8)
+            anchors.baseline: head.baseline
+            text: root.view.version || ""
+            color: Util.alpha(root.labelTone, 0.55)
+            font.pixelSize: Style.font.caption - 2
+          }
+        }
 
         Repeater {
-          model: root.menuModel
-
+          // keyed by position, so a refresh updates rows in place instead of rebuilding them (no flicker)
+          model: (root.view.rows || []).length
           Item {
-            required property var modelData
             required property int index
-            readonly property var item: modelData
-            readonly property bool isRow: item.kind !== "sec"
-            readonly property bool actionable: item.kind === "window"
-            readonly property bool cursor: actionable && root.menuCursor === index
-            width: menuRows.width
-            height: isRow ? root.menuRowH
-              : (index === 0 ? 0 : root.menuGroupGap) + root.menuHeadH
-            opacity: isRow && !actionable ? 0.55 : 1
+            readonly property var r: (root.view.rows || [])[index] || ({ type: "" })
+            readonly property bool cursor: r.type === "win" && root.cursor === index
+            width: content.width
+            height: (r.type === "sec" || r.type === "error" ? (index === 0 ? 0 : root.groupGap) : index === 0 ? root.topGap : 0) + row.height
 
-            Text {
-              visible: !parent.isRow
-              x: root.menuGutter
-              anchors.bottom: parent.bottom
-              text: parent.item.label
-              color: root.menuLabel
-              font.family: root.menuFont
-              font.pixelSize: Style.font.caption
-              font.bold: true
+            Loader {
+              id: row
+              y: r.type === "sec" || r.type === "error" ? (index === 0 ? 0 : root.groupGap) : index === 0 ? root.topGap : 0
+              width: parent.width
+              sourceComponent: ({ win: winC, soon: soonC })[r.type] || textC
             }
 
-            Rectangle {
-              visible: parent.isRow
-              x: root.menuEdge
-              width: parent.width - 2 * root.menuEdge
-              height: root.menuRowH
-              radius: 2
-              color: parent.cursor ? root.menuSurface : "transparent"
+            // A parked window: a cursor surface, its title, its class on the right
+            Component {
+              id: winC
+              Item {
+                height: root.rowH
+                Rectangle {
+                  x: root.edge
+                  width: parent.width - 2 * root.edge
+                  height: parent.height
+                  radius: 2
+                  color: cursor ? root.surface : "transparent"
+                }
+                Label {
+                  x: root.gutter
+                  width: parent.width - 2 * root.gutter - (winClass.visible ? winClass.width + Style.space(8) : 0)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: r.label
+                  color: root.ink
+                  elide: Text.ElideRight
+                }
+                Right { id: winClass; visible: !!r.value; margin: root.gutter; text: r.value || ""; color: root.labelTone }
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onEntered: root.cursor = index
+                  onClicked: root.activate(r.action)
+                }
+              }
             }
 
-            Text {
-              visible: parent.isRow && !!parent.item.glyph
-              x: root.menuGutter
-              anchors.verticalCenter: parent.verticalCenter
-              text: parent.item.glyph || ""
-              color: root.menuValue
-              font.family: root.menuFont
-              font.pixelSize: Style.font.body
+            // Nothing parked: a square wave drifting left, one line of how to park
+            Component {
+              id: soonC
+              Column {
+                topPadding: Style.space(28)
+                bottomPadding: Style.space(20)
+                spacing: Style.space(18)
+                Item {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  width: Style.space(140)
+                  height: Style.space(18)
+                  clip: true
+                  Timer {
+                    interval: 50
+                    repeat: true
+                    running: root.opened
+                    onTriggered: wave.x = (wave.x - wave.period * interval / 2400) % wave.period
+                  }
+                  Row {
+                    id: wave
+                    readonly property real period: Style.space(28)
+                    readonly property real stroke: 1.5
+                    Repeater {
+                      model: Math.ceil(Style.space(140) / wave.period) + 1
+                      Item {
+                        width: wave.period
+                        height: Style.space(18)
+                        Rectangle { x: -wave.stroke / 2; y: 2 - wave.stroke / 2; width: wave.stroke; height: parent.height - 4 + wave.stroke; color: root.labelTone }
+                        Rectangle { y: 2 - wave.stroke / 2; width: wave.period / 2; height: wave.stroke; color: root.labelTone }
+                        Rectangle { x: wave.period / 2 - wave.stroke / 2; width: wave.stroke; height: parent.height - 4 + wave.stroke; color: root.labelTone }
+                        Rectangle { x: wave.period / 2; y: parent.height - 2 - wave.stroke / 2; width: wave.stroke; height: wave.stroke; color: root.labelTone }
+                      }
+                    }
+                  }
+                  Rectangle {
+                    width: parent.width / 4
+                    height: parent.height
+                    gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: root.bg } GradientStop { position: 1; color: "transparent" } }
+                  }
+                  Rectangle {
+                    x: parent.width * 3 / 4
+                    width: parent.width
+                    height: parent.height
+                    gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: "transparent" } GradientStop { position: 1; color: root.bg } }
+                  }
+                }
+                Label {
+                  x: root.gutter
+                  width: parent.width - 2 * root.gutter
+                  horizontalAlignment: Text.AlignHCenter
+                  text: r.head
+                  color: root.labelTone
+                  wrapMode: Text.WordWrap
+                }
+              }
             }
 
-            Text {
-              id: valueLabel
-              visible: parent.isRow && !!parent.item.value
-              anchors.right: parent.right
-              anchors.rightMargin: root.menuGutter
-              anchors.verticalCenter: parent.verticalCenter
-              width: Math.min(implicitWidth, parent.width * 0.45)
-              text: parent.item.value || ""
-              color: root.menuValue
-              font.family: root.menuFont
-              font.pixelSize: Style.font.body
-              elide: Text.ElideRight
-            }
-
-            Text {
-              visible: parent.isRow
-              x: root.menuGutter + (parent.item.glyph ? root.menuSlot : 0)
-              width: (valueLabel.visible ? valueLabel.x - Style.space(8)
-                : parent.width - root.menuGutter) - x
-              anchors.verticalCenter: parent.verticalCenter
-              text: parent.item.label
-              color: parent.item.kind === "empty" ? root.menuLabel : root.menuInk
-              font.family: root.menuFont
-              font.pixelSize: Style.font.body
-              elide: Text.ElideRight
-            }
-
-            MouseArea {
-              visible: parent.actionable
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onEntered: root.menuCursor = parent.index
-              onClicked: root.activateMenuItem()
+            // A section's name, or an error in its place
+            Component {
+              id: textC
+              Label {
+                readonly property bool sec: r.type === "sec"
+                leftPadding: root.gutter; rightPadding: root.gutter
+                width: parent.width
+                height: sec ? root.headH : implicitHeight
+                verticalAlignment: Text.AlignVCenter
+                text: r.label || ""
+                color: sec ? root.labelTone : root.alertTone
+                wrapMode: Text.WordWrap
+              }
             }
           }
         }
       }
     }
   }
+
+  // ---------------------------------------------------------------- pieces
+
+  component Label: Text {
+    textFormat: Text.PlainText
+    color: root.valueTone
+    font.family: root.mono
+    font.pixelSize: Style.font.caption
+  }
+
+  // A label against its row's right edge
+  component Right: Label {
+    property int margin
+    anchors.right: parent.right
+    anchors.rightMargin: margin
+    anchors.verticalCenter: parent.verticalCenter
+  }
+
 }
