@@ -232,7 +232,7 @@ Panel {
               }
             }
 
-            // Nothing parked: a square wave drifting left, one line of how to park
+            // Nothing parked: a single dash sweeping its track, one line of how to park
             Component {
               id: soonC
               Column {
@@ -240,42 +240,24 @@ Panel {
                 bottomPadding: Style.space(20)
                 spacing: Style.space(18)
                 Item {
+                  id: track
                   anchors.horizontalCenter: parent.horizontalCenter
                   width: Style.space(140)
                   height: Style.space(18)
-                  clip: true
-                  Timer {
-                    interval: 50
-                    repeat: true
-                    running: root.opened
-                    onTriggered: wave.x = (wave.x - wave.period * interval / 2400) % wave.period
-                  }
-                  Row {
-                    id: wave
-                    readonly property real period: Style.space(28)
-                    readonly property real stroke: 1.5
-                    Repeater {
-                      model: Math.ceil(Style.space(140) / wave.period) + 1
-                      Item {
-                        width: wave.period
-                        height: Style.space(18)
-                        Rectangle { x: -wave.stroke / 2; y: 2 - wave.stroke / 2; width: wave.stroke; height: parent.height - 4 + wave.stroke; color: root.labelTone }
-                        Rectangle { y: 2 - wave.stroke / 2; width: wave.period / 2; height: wave.stroke; color: root.labelTone }
-                        Rectangle { x: wave.period / 2 - wave.stroke / 2; width: wave.stroke; height: parent.height - 4 + wave.stroke; color: root.labelTone }
-                        Rectangle { x: wave.period / 2; y: parent.height - 2 - wave.stroke / 2; width: wave.stroke; height: wave.stroke; color: root.labelTone }
-                      }
+                  Rectangle {
+                    id: dash
+                    width: Style.space(26)
+                    height: 1.5
+                    y: (track.height - height) / 2
+                    color: root.labelTone
+                    SequentialAnimation on x {
+                      running: root.opened
+                      loops: Animation.Infinite
+                      NumberAnimation { from: 0; to: track.width - dash.width; duration: 1600; easing.type: Easing.InOutQuad }
+                      PauseAnimation { duration: 400 }
+                      NumberAnimation { from: track.width - dash.width; to: 0; duration: 1600; easing.type: Easing.InOutQuad }
+                      PauseAnimation { duration: 400 }
                     }
-                  }
-                  Rectangle {
-                    width: parent.width / 4
-                    height: parent.height
-                    gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: root.bg } GradientStop { position: 1; color: "transparent" } }
-                  }
-                  Rectangle {
-                    x: parent.width * 3 / 4
-                    width: parent.width
-                    height: parent.height
-                    gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: "transparent" } GradientStop { position: 1; color: root.bg } }
                   }
                 }
                 Label {
