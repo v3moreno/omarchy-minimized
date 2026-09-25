@@ -23,6 +23,12 @@ not on the bar.
 The Alt+double-click bind is `non_consuming`, so the click still reaches the
 application — the plugin only watches it.
 
+The widget panel itself is an IPC target — `open`, `close`, `show`, `hide`,
+and `toggle` on `omarchy-modes.minimized.widget`, e.g.
+`qs ipc -n -p "$OMARCHY_PATH/shell" call omarchy-modes.minimized.widget toggle`.
+Inside the panel, `Up`/`Down` (or `j`/`k`) move the cursor, `Enter` restores,
+and `Esc` closes.
+
 ## How it works
 
 - `SUPER+ALT+M` (or the widget menu) moves the focused window to
