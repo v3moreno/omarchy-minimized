@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-modes.minimized",
+  "name": "Omarchy Minimized",
+  "version": "1.0.0",
+  "author": "Victor Moreno",
+  "license": "MIT",
+  "description": "Minimize windows to a special workspace and restore them — by keybind, Alt+double-click, or the bar widget.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Minimized.qml"
+  },
+  "barWidget": {
+    "displayName": "Minimized windows",
+    "description": "Shows and restores minimized windows.",
+    "category": "Desktop",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
