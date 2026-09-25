@@ -20,6 +20,12 @@ Item {
   readonly property string dropinDirectory: Quickshell.env("HOME") + "/.local/state/omarchy/toggles/hypr"
   readonly property string dropinPath: dropinDirectory + "/omarchy-minimized.lua"
   readonly property int hyprctlTimeoutMs: 5000
+  // Whole-operation budget, separate from the per-process watchdog: a step
+  // can wedge with no process running (e.g. a save whose onSaved never lands
+  // because the file's own watchChanges reload raced it), and busy would
+  // then hold forever — every IPC call answering "busy". startHyprctl and
+  // saveState restart it; finish() stops it.
+  readonly property int operationTimeoutMs: 15000
   readonly property int doubleClickMs: 450
 
   // The binds are the feature, so they are emitted unconditionally — but gated
@@ -132,6 +138,7 @@ Item {
 
   function finish(message) {
     hyprctlWatchdog.stop()
+    operationWatchdog.stop()
     var wasUserFacing = operation === "minimize" || operation === "restore"
     busy = false
     operation = ""
@@ -167,6 +174,14 @@ Item {
     startHyprctl(["-j", "clients"], "-j clients", function(rawClients) {
       var clients = parseClients(rawClients, "-j clients")
       if (!clients) return
+      // An empty list this early usually means Hyprland's IPC answered
+      // before its client table was populated — not that every parked
+      // window died. Skip rather than wipe; a later reload can retry.
+      if (clients.length === 0) {
+        sessionPruned = false
+        finish("")
+        return
+      }
       var reconciliation
       try {
         reconciliation = Minimize.prune(modeState, clients)
@@ -183,6 +198,7 @@ Item {
     try {
       pendingState = State.validateState(nextState)
       stateSaveContinuation = continuation
+      if (busy) operationWatchdog.restart()
       if (dirsReady) {
         stateFile.setText(State.writeState(pendingState))
       } else {
@@ -200,6 +216,7 @@ Item {
     }
     hyprctlDescription = description
     hyprctlContinuation = continuation
+    operationWatchdog.restart()
     hyprctlProcess.command = ["hyprctl"].concat(args)
     hyprctlProcess.running = true
     hyprctlWatchdog.restart()
@@ -388,6 +405,7 @@ Item {
       return "queued"
     }
     probeProcess.command = ["sh", "-c", "hyprctl cursorpos; echo ===; hyprctl -j clients"]
+    probeWatchdog.restart()
     probeProcess.running = true
     return "probing"
   }
@@ -443,8 +461,12 @@ Item {
   function pruneDestroyed() {
     var reconciliation
     if (busy || !stateLoaded || stateError !== "") return
+    var snap = clientSnapshot()
+    // The Hyprland toplevel model can still be empty moments after service
+    // load; pruning against it would drop every parked entry at once.
+    if (snap.length === 0) return
     try {
-      reconciliation = Minimize.prune(modeState, clientSnapshot())
+      reconciliation = Minimize.prune(modeState, snap)
     } catch (error) {
       console.warn("omarchy-minimized: " + error.message)
       return
@@ -467,15 +489,19 @@ Item {
   }
 
   // destroy() on disable/remove lands here; children are already torn down, so
-  // go through the singleton. The orphan sweep waits and re-checks shell.json:
-  // a shell restart destroys us too, but the plugin is still enabled then.
+  // go through the singleton. The orphan sweep re-checks shell.json a few
+  // times — a shell restart destroys us too, and a single check can catch the
+  // file mid-rewrite by the incoming shell and sweep parked windows by mistake.
   Component.onDestruction: {
     Quickshell.execDetached(["sh", "-c",
       "rm -f -- \"$1\" && hyprctl reload >/dev/null 2>&1 || :; " +
       "sleep 3; " +
+      "for i in 1 2 3; do " +
       "jq -e --arg id omarchy-modes.minimized " +
       "'([.plugins[]?.id] + [(.bar.layout // {})[] | .[]? | .id]) | any(. == $id)' " +
       "\"$HOME/.config/omarchy/shell.json\" >/dev/null 2>&1 && exit 0; " +
+      "sleep 2; " +
+      "done; " +
       "hyprctl -j clients | jq -r '.[] | select(.workspace.name == \"special:minimized\") | .address' | " +
       "while read -r a; do " +
       "o=$(jq -r --arg a \"$a\" '.minimized[$a].origin // empty' " +
@@ -580,17 +606,36 @@ Item {
     id: probeProcess
     stdout: StdioCollector { id: probeStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) return
+      probeWatchdog.stop()
       var queued = root.clickQueued
       root.clickQueued = false
-      root.processClick(root.windowAtCursor(probeStdout.text))
+      if (exitCode === 0) root.processClick(root.windowAtCursor(probeStdout.text))
       // A click queued mid-probe gets its own fresh probe — its timestamp is
       // recorded when that probe lands, keeping the double-click window honest.
+      // On a watchdog kill it gets the same retry instead of being dropped.
       if (queued) root.click()
     }
   }
 
   Process { id: notifier }
+
+  // Click probes run outside the operation lock, so they get their own
+  // watchdog — a hung hyprctl there would otherwise silence Alt+click
+  // for the rest of the session.
+  Timer {
+    id: probeWatchdog
+    interval: root.hyprctlTimeoutMs
+    repeat: false
+    onTriggered: if (probeProcess.running) probeProcess.signal(9)
+  }
+
+  Timer {
+    id: operationWatchdog
+    interval: root.operationTimeoutMs
+    repeat: false
+    onTriggered: root.fail("Operation timed out after "
+      + root.operationTimeoutMs / 1000 + "s; the state lock was released.")
+  }
 
   Timer {
     id: hyprctlWatchdog
