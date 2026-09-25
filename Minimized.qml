@@ -20,7 +20,6 @@ BarWidget {
       && toplevel.workspace.name === Minimize.MINIMIZED_WORKSPACE
   })
   readonly property int minimizedCount: minimizedToplevels.length
-  readonly property string activeWindowAddress: toplevelAddress(Hyprland.activeToplevel)
   readonly property string omarchyPath: Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy"
   readonly property string shellPath: omarchyPath + "/shell"
 
@@ -61,8 +60,7 @@ BarWidget {
   }
 
   function open() {
-    // Item 0 is the MINIMIZE header; the action row follows it.
-    menuCursor = 1
+    menuCursor = 0
     menuOpen = true
   }
 
@@ -76,8 +74,9 @@ BarWidget {
   }
 
   // ---- menu model ----
-  // Same flat layout as omarchy-modes.switcher: one gutter, caps section
-  // headers, glyphs in a leading slot, values flush right.
+  // Same flat layout as omarchy-modes.switcher: one gutter, values flush
+  // right, surface fill on the cursor row. The menu is a bare restore list —
+  // minimizing happens by keybind/double-click, not from here.
   readonly property string menuFont: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
   readonly property color menuInk: Color.popups.text
   readonly property color menuValue: Util.alpha(Color.popups.text, 0.72)
@@ -92,22 +91,14 @@ BarWidget {
   readonly property int menuTopPad: Style.space(10)
 
   function menuItems() {
-    var items = [{ kind: "sec", label: "MINIMIZE" }]
-    items.push({
-      kind: "action", id: "minimize-active", label: "active window",
-      glyph: "󰖰", enabled: activeWindowAddress !== ""
-    })
-    items.push({ kind: "sec", label: "MINIMIZED" })
-    if (minimizedCount === 0) {
-      items.push({ kind: "empty", label: "nothing minimized" })
-    } else {
-      for (var i = 0; i < minimizedToplevels.length; i++) {
-        var t = minimizedToplevels[i]
-        items.push({
-          kind: "window", id: toplevelAddress(t), label: windowLabel(t),
-          value: toplevelClass(t)
-        })
-      }
+    if (minimizedCount === 0) return [{ kind: "empty", label: "nothing minimized" }]
+    var items = []
+    for (var i = 0; i < minimizedToplevels.length; i++) {
+      var t = minimizedToplevels[i]
+      items.push({
+        kind: "window", id: toplevelAddress(t), label: windowLabel(t),
+        value: toplevelClass(t)
+      })
     }
     return items
   }
@@ -121,18 +112,14 @@ BarWidget {
       var next = i + dy
       if (next < 0 || next >= items.length) break
       i = next
-      if (items[i].kind === "action" || items[i].kind === "window") break
+      if (items[i].kind === "window") break
     }
     menuCursor = i
   }
 
   function activateMenuItem() {
     var item = menuModel[menuCursor]
-    if (!item) return
-    if (item.kind === "action" && item.enabled) {
-      ipcCall("minimizeActive")
-      close()
-    } else if (item.kind === "window") {
+    if (item && item.kind === "window") {
       ipcCall("restore", item.id)
       close()
     }
@@ -207,9 +194,8 @@ BarWidget {
             required property int index
             readonly property var item: modelData
             readonly property bool isRow: item.kind !== "sec"
-            readonly property bool cursor: isRow && root.menuCursor === index
             readonly property bool actionable: item.kind === "window"
-              || (item.kind === "action" && item.enabled)
+            readonly property bool cursor: actionable && root.menuCursor === index
             width: menuRows.width
             height: isRow ? root.menuRowH
               : (index === 0 ? 0 : root.menuGroupGap) + root.menuHeadH
