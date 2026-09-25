@@ -61,7 +61,8 @@ BarWidget {
   }
 
   function open() {
-    menuCursor = 0
+    // Item 0 is the MINIMIZE header; the action row follows it.
+    menuCursor = 1
     menuOpen = true
   }
 
@@ -74,18 +75,79 @@ BarWidget {
     else open()
   }
 
-  function activateMenuCursor() {
-    if (menuCursor === 0) {
+  // ---- menu model ----
+  // Same flat layout as omarchy-modes.switcher: one gutter, caps section
+  // headers, glyphs in a leading slot, values flush right.
+  readonly property string menuFont: bar && bar.fontFamily ? bar.fontFamily : Style.font.family
+  readonly property color menuInk: Color.popups.text
+  readonly property color menuValue: Util.alpha(Color.popups.text, 0.72)
+  readonly property color menuLabel: Util.alpha(Color.popups.text, 0.48)
+  readonly property color menuSurface: Util.alpha(Color.popups.text, 0.07)
+  readonly property int menuGutter: Style.space(18)
+  readonly property int menuEdge: Style.space(8)
+  readonly property int menuSlot: Style.space(18)
+  readonly property int menuRowH: Style.space(24)
+  readonly property int menuHeadH: Style.space(14)
+  readonly property int menuGroupGap: Style.space(16)
+  readonly property int menuTopPad: Style.space(10)
+
+  function menuItems() {
+    var items = [{ kind: "sec", label: "MINIMIZE" }]
+    items.push({
+      kind: "action", id: "minimize-active", label: "active window",
+      glyph: "󰖰", enabled: activeWindowAddress !== ""
+    })
+    items.push({ kind: "sec", label: "MINIMIZED" })
+    if (minimizedCount === 0) {
+      items.push({ kind: "empty", label: "nothing minimized" })
+    } else {
+      for (var i = 0; i < minimizedToplevels.length; i++) {
+        var t = minimizedToplevels[i]
+        items.push({
+          kind: "window", id: toplevelAddress(t), label: windowLabel(t),
+          value: toplevelClass(t)
+        })
+      }
+    }
+    return items
+  }
+
+  readonly property var menuModel: menuItems()
+  onMenuModelChanged: menuCursor = Math.max(0, Math.min(menuModel.length - 1, menuCursor))
+
+  function moveMenuCursor(dy) {
+    var items = menuModel, i = menuCursor
+    for (;;) {
+      var next = i + dy
+      if (next < 0 || next >= items.length) break
+      i = next
+      if (items[i].kind === "action" || items[i].kind === "window") break
+    }
+    menuCursor = i
+  }
+
+  function activateMenuItem() {
+    var item = menuModel[menuCursor]
+    if (!item) return
+    if (item.kind === "action" && item.enabled) {
       ipcCall("minimizeActive")
       close()
-    } else if (menuCursor <= minimizedToplevels.length) {
-      ipcCall("restore", toplevelAddress(minimizedToplevels[menuCursor - 1]))
+    } else if (item.kind === "window") {
+      ipcCall("restore", item.id)
       close()
     }
   }
 
   implicitWidth: triggerRow.implicitWidth
   implicitHeight: triggerRow.implicitHeight
+
+  // The service owns the omarchy-modes.minimized target; the widget gets its
+  // own so a keybind or script can open the restore list directly.
+  IpcHandler {
+    target: "omarchy-modes.minimized.widget"
+
+    function menu(): string { root.toggle(); return "toggled" }
+  }
 
   Row {
     id: triggerRow
@@ -126,110 +188,97 @@ BarWidget {
     PanelKeyCatcher {
       id: menuKeys
       anchors.fill: parent
-      onMoveRequested: function(dx, dy) {
-        if (dy === 0) return
-        root.menuCursor = Math.max(0,
-          Math.min(root.minimizedToplevels.length, root.menuCursor + dy))
-      }
-      onActivateRequested: root.activateMenuCursor()
+      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveMenuCursor(dy) }
+      onActivateRequested: root.activateMenuItem()
       onCloseRequested: root.close()
 
       Column {
         id: menuRows
         width: parent.width
-        spacing: Style.spacing.labelGap
-
-        Rectangle {
-          id: minimizeActiveRow
-          width: menuRows.width
-          height: Style.spacing.popupRowHeight
-          radius: Math.max(1, Style.cornerRadius - Style.spacing.hairline)
-          color: root.menuCursor === 0
-            ? Style.hoverFillFor(Color.popups.text, Color.accent) : "transparent"
-          opacity: root.activeWindowAddress !== "" ? 1 : 0.55
-
-          Text {
-            anchors.left: parent.left
-            anchors.leftMargin: Style.spacing.controlPaddingX
-            anchors.verticalCenter: parent.verticalCenter
-            text: "󰖰"
-            color: Color.accent
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-          }
-
-          Text {
-            anchors.left: parent.left
-            anchors.leftMargin: Style.space(32)
-            anchors.right: parent.right
-            anchors.rightMargin: Style.spacing.controlPaddingX
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Minimize active window"
-            color: Color.popups.text
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            enabled: root.activeWindowAddress !== ""
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onEntered: root.menuCursor = 0
-            onClicked: {
-              root.ipcCall("minimizeActive")
-              root.close()
-            }
-          }
-        }
-
-        Text {
-          width: menuRows.width
-          visible: root.minimizedCount === 0
-          text: "Nothing minimized"
-          color: Color.popups.text
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
-          horizontalAlignment: Text.AlignHCenter
-          verticalAlignment: Text.AlignVCenter
-          height: visible ? Style.spacing.popupRowHeight : 0
-        }
+        spacing: 0
+        topPadding: Style.space(4)
+        bottomPadding: root.menuTopPad
 
         Repeater {
-          model: root.minimizedToplevels
+          model: root.menuModel
 
-          Rectangle {
+          Item {
             required property var modelData
             required property int index
+            readonly property var item: modelData
+            readonly property bool isRow: item.kind !== "sec"
+            readonly property bool cursor: isRow && root.menuCursor === index
+            readonly property bool actionable: item.kind === "window"
+              || (item.kind === "action" && item.enabled)
             width: menuRows.width
-            height: Style.spacing.popupRowHeight
-            radius: Math.max(1, Style.cornerRadius - Style.spacing.hairline)
-            color: root.menuCursor === index + 1
-              ? Style.hoverFillFor(Color.popups.text, Color.accent) : "transparent"
+            height: isRow ? root.menuRowH
+              : (index === 0 ? 0 : root.menuGroupGap) + root.menuHeadH
+            opacity: isRow && !actionable ? 0.55 : 1
 
             Text {
-              anchors.left: parent.left
-              anchors.leftMargin: Style.spacing.controlPaddingX
-              anchors.right: parent.right
-              anchors.rightMargin: Style.spacing.controlPaddingX
+              visible: !parent.isRow
+              x: root.menuGutter
+              anchors.bottom: parent.bottom
+              text: parent.item.label
+              color: root.menuLabel
+              font.family: root.menuFont
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Rectangle {
+              visible: parent.isRow
+              x: root.menuEdge
+              width: parent.width - 2 * root.menuEdge
+              height: root.menuRowH
+              radius: 2
+              color: parent.cursor ? root.menuSurface : "transparent"
+            }
+
+            Text {
+              visible: parent.isRow && !!parent.item.glyph
+              x: root.menuGutter
               anchors.verticalCenter: parent.verticalCenter
-              text: root.windowLabel(parent.modelData)
-              color: Color.popups.text
-              font.family: Style.font.family
+              text: parent.item.glyph || ""
+              color: root.menuValue
+              font.family: root.menuFont
+              font.pixelSize: Style.font.body
+            }
+
+            Text {
+              id: valueLabel
+              visible: parent.isRow && !!parent.item.value
+              anchors.right: parent.right
+              anchors.rightMargin: root.menuGutter
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.min(implicitWidth, parent.width * 0.45)
+              text: parent.item.value || ""
+              color: root.menuValue
+              font.family: root.menuFont
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
+            }
+
+            Text {
+              visible: parent.isRow
+              x: root.menuGutter + (parent.item.glyph ? root.menuSlot : 0)
+              width: (valueLabel.visible ? valueLabel.x - Style.space(8)
+                : parent.width - root.menuGutter) - x
+              anchors.verticalCenter: parent.verticalCenter
+              text: parent.item.label
+              color: parent.item.kind === "empty" ? root.menuLabel : root.menuInk
+              font.family: root.menuFont
               font.pixelSize: Style.font.body
               elide: Text.ElideRight
             }
 
             MouseArea {
+              visible: parent.actionable
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onEntered: root.menuCursor = parent.index + 1
-              onClicked: {
-                root.ipcCall("restore", root.toplevelAddress(parent.modelData))
-                root.close()
-              }
+              onEntered: root.menuCursor = parent.index
+              onClicked: root.activateMenuItem()
             }
           }
         }
