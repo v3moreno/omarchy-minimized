@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omarchy-modes.minimized",
   "name": "Omarchy Minimized",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Victor Moreno",
   "license": "MIT",
   "description": "Minimize windows to a special workspace and restore them — by keybind, Alt+double-click, or the bar widget.",

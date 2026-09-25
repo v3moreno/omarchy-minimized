@@ -492,6 +492,9 @@ Item {
   // go through the singleton. The orphan sweep re-checks shell.json a few
   // times — a shell restart destroys us too, and a single check can catch the
   // file mid-rewrite by the incoming shell and sweep parked windows by mistake.
+  // Only addresses tracked in state.json are unparked — a foreign window that
+  // happens to sit on special:minimized (other tools can park there too) is
+  // left exactly where it is.
   Component.onDestruction: {
     Quickshell.execDetached(["sh", "-c",
       "rm -f -- \"$1\" && hyprctl reload >/dev/null 2>&1 || :; " +
@@ -504,9 +507,10 @@ Item {
       "done; " +
       "hyprctl -j clients | jq -r '.[] | select(.workspace.name == \"special:minimized\") | .address' | " +
       "while read -r a; do " +
-      "o=$(jq -r --arg a \"$a\" '.minimized[$a].origin // empty' " +
+      "o=$(jq -r --arg a \"$a\" 'if (.minimized | has($a)) then (.minimized[$a].origin // \"?\") else \"skip\" end' " +
       "\"$HOME/.local/state/omarchy-modes/state.json\" 2>/dev/null); " +
-      "case \"$o\" in ''|*[!0-9]*) o=$(hyprctl -j activeworkspace | jq -r '.name') ;; esac; " +
+      "case \"$o\" in skip|'') continue ;; esac; " +
+      "case \"$o\" in '?'|*[!0-9]*) o=$(hyprctl -j activeworkspace | jq -r '.name') ;; esac; " +
       "case \"$o\" in ''|*[!0-9]*) o=1 ;; esac; " +
       "hyprctl dispatch \"hl.dsp.window.move({ workspace = \\\"$o\\\", window = \\\"address:$a\\\", follow = false })\" >/dev/null 2>&1 || :; " +
       "done",
