@@ -5,8 +5,20 @@
  */
 
 var MINIMIZED_WORKSPACE = "special:minimized";
-var WORKSPACE_ID = /^(?:0|[1-9][0-9]*)$/;
 var WINDOW_ADDRESS = /^0x[0-9a-fA-F]+$/;
+// A regular workspace is anything addressable by name that is not a special
+// workspace. Per-monitor workspace setups name workspaces "<monitor>:<n>"
+// instead of bare digits, and hyprctl clients reports that name — so a
+// digits-only test rejects every window. Names with quotes, backslashes, or
+// control characters are rejected because the name is embedded in a Lua
+// command string.
+var WORKSPACE_NAME_SAFE = /^[^\u0000-\u001f"\\]+$/;
+
+function isRegularWorkspaceName(value) {
+    return typeof value === "string" && value.length > 0 &&
+        value.indexOf("special:") !== 0 &&
+        WORKSPACE_NAME_SAFE.test(value);
+}
 
 function own(object, key) {
     return Object.prototype.hasOwnProperty.call(object, key);
@@ -108,8 +120,8 @@ function minimizeRecord(client) {
     address = client.address;
     origin = clientWorkspaceName(client);
     requireAddress(address);
-    if (typeof origin !== "string" || !WORKSPACE_ID.test(origin)) {
-        throw new TypeError("A minimized window must originate on a numbered workspace.");
+    if (!isRegularWorkspaceName(origin)) {
+        throw new TypeError("A minimized window must originate on a regular workspace.");
     }
     return {
         origin: origin,
@@ -120,9 +132,8 @@ function minimizeRecord(client) {
 
 function moveCommand(address, workspace) {
     requireAddress(address);
-    if (workspace !== MINIMIZED_WORKSPACE &&
-            (typeof workspace !== "string" || !WORKSPACE_ID.test(workspace))) {
-        throw new TypeError("Move target must be special:minimized or a numbered workspace.");
+    if (workspace !== MINIMIZED_WORKSPACE && !isRegularWorkspaceName(workspace)) {
+        throw new TypeError("Move target must be special:minimized or a regular workspace.");
     }
     // Omarchy's `hyprctl dispatch` wraps the argument in hl.dispatch(...)
     // itself — passing hl.dispatch(hl.dsp...) double-wraps, which moves the
@@ -181,7 +192,7 @@ function planRestore(state, clients, address, fallbackWorkspace) {
     // A window parked outside our bookkeeping (state loss, manual move) still
     // restores — to wherever the user is looking rather than a recorded origin.
     origin = record ? record.origin : fallbackWorkspace;
-    if (typeof origin !== "string" || !WORKSPACE_ID.test(origin)) {
+    if (!isRegularWorkspaceName(origin)) {
         return { ok: false, reason: "no-origin", address: address, state: copyState(state) };
     }
 
@@ -202,6 +213,7 @@ if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         MINIMIZED_WORKSPACE: MINIMIZED_WORKSPACE,
         WINDOW_ADDRESS: WINDOW_ADDRESS,
+        isRegularWorkspaceName: isRegularWorkspaceName,
         clientAtAddress: clientAtAddress,
         clientWorkspaceName: clientWorkspaceName,
         minimizedClients: minimizedClients,
