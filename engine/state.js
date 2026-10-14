@@ -5,8 +5,17 @@
  */
 
 var MODES = ["floating", "dwindle", "master", "scrolling"];
-var WORKSPACE_ID = /^(?:0|[1-9][0-9]*)$/;
 var WINDOW_ADDRESS = /^0x[0-9a-fA-F]+$/;
+// Workspace identifiers are names, not just bare digits: per-monitor workspace
+// setups name workspaces "<monitor>:<n>". The name must not be a special
+// workspace and must stay safe to embed in a Lua command string.
+var WORKSPACE_NAME_SAFE = /^[^\u0000-\u001f"\\]+$/;
+
+function isRegularWorkspaceName(value) {
+    return typeof value === "string" && value.length > 0 &&
+        value.indexOf("special:") !== 0 &&
+        WORKSPACE_NAME_SAFE.test(value);
+}
 
 function StateValidationError(message) {
     this.name = "StateValidationError";
@@ -69,9 +78,9 @@ function requireExactKeys(object, keys, path) {
     }
 }
 
-function validateWorkspaceId(id, path) {
-    if (typeof id !== "string" || !WORKSPACE_ID.test(id)) {
-        fail(path, "workspace id must be a non-negative decimal integer string");
+function validateWorkspaceName(id, path) {
+    if (!isRegularWorkspaceName(id)) {
+        fail(path, "workspace name must be a non-empty, non-special name without quotes or control characters");
     }
 }
 
@@ -99,7 +108,7 @@ function validateState(state) {
     workspaceIds = Object.keys(state.modes).sort(compareWorkspaceIds);
     for (index = 0; index < workspaceIds.length; index += 1) {
         workspaceId = workspaceIds[index];
-        validateWorkspaceId(workspaceId, "$.modes[" + JSON.stringify(workspaceId) + "]");
+        validateWorkspaceName(workspaceId, "$.modes[" + JSON.stringify(workspaceId) + "]");
         if (!isMode(state.modes[workspaceId])) {
             fail("$.modes[" + JSON.stringify(workspaceId) + "]",
                 "mode must be one of " + MODES.join(", "));
@@ -121,7 +130,7 @@ function validateState(state) {
         }
         requireExactKeys(minimized, ["origin", "title", "class"],
             "$.minimized[" + JSON.stringify(address) + "]");
-        validateWorkspaceId(minimized.origin,
+        validateWorkspaceName(minimized.origin,
             "$.minimized[" + JSON.stringify(address) + "].origin");
         if (typeof minimized.title !== "string") {
             fail("$.minimized[" + JSON.stringify(address) + "].title", "expected a string");
